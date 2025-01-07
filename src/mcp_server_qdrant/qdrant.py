@@ -1,4 +1,5 @@
 from typing import Optional
+from loguru import logger
 from qdrant_client import AsyncQdrantClient, models
 
 
@@ -20,6 +21,7 @@ class QdrantConnector:
         fastembed_model_name: str,
         qdrant_local_path: Optional[str] = None,
     ):
+        logger.debug(f"Initializing QdrantConnector with collection: {collection_name}, model: {fastembed_model_name}")
         self._qdrant_url = qdrant_url.rstrip("/") if qdrant_url else None
         self._qdrant_api_key = qdrant_api_key
         self._collection_name = collection_name
@@ -27,18 +29,26 @@ class QdrantConnector:
         # For the time being, FastEmbed models are the only supported ones.
         # A list of all available models can be found here:
         # https://qdrant.github.io/fastembed/examples/Supported_Models/
+    
         self._client = AsyncQdrantClient(location=qdrant_url, api_key=qdrant_api_key, path=qdrant_local_path)
         self._client.set_model(fastembed_model_name)
+        logger.info("QdrantConnector initialized with collection: {collection_name}, model: {fastembed_model_name}")
 
     async def store_memory(self, information: str):
         """
         Store a memory in the Qdrant collection.
         :param information: The information to store.
         """
-        await self._client.add(
-            self._collection_name,
-            documents=[information],
-        )
+        logger.debug(f"Storing memory: {information[:100]}...")
+        try:
+            await self._client.add(
+                self._collection_name,
+                documents=[information],
+            )
+            logger.info("Memory stored successfully")
+        except Exception as e:
+            logger.error(f"Error storing memory: {str(e)}")
+            raise
 
     async def find_memories(self, query: str) -> list[str]:
         """
@@ -46,13 +56,20 @@ class QdrantConnector:
         :param query: The query to use for the search.
         :return: A list of memories found.
         """
-        collection_exists = await self._client.collection_exists(self._collection_name)
-        if not collection_exists:
-            return []
+        logger.debug(f"Searching memories with query: {query}")
+        try:
+            collection_exists = await self._client.collection_exists(self._collection_name)
+            if not collection_exists:
+                logger.info("Collection does not exist, returning empty list")
+                return []
 
-        search_results = await self._client.query(
-            self._collection_name,
-            query_text=query,
-            limit=10,
-        )
-        return [result.document for result in search_results]
+            search_results = await self._client.query(
+                self._collection_name,
+                query_text=query,
+                limit=10,
+            )
+            logger.info(f"Found {len(search_results)} memories")
+            return [result.document for result in search_results]
+        except Exception as e:
+            logger.error(f"Error searching memories: {str(e)}")
+            raise

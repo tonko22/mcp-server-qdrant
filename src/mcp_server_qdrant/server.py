@@ -1,5 +1,7 @@
 from typing import Optional
+import os
 
+from loguru import logger
 from mcp.server import Server, NotificationOptions
 from mcp.server.models import InitializationOptions
 
@@ -81,21 +83,32 @@ def serve(
     async def handle_tool_call(
         name: str, arguments: dict | None
     ) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
+        logger.debug(f"Tool call received: {name} with arguments: {arguments}")
+        
         if name not in ["qdrant-store-memory", "qdrant-find-memories"]:
-            raise ValueError(f"Unknown tool: {name}")
+            error_msg = f"Unknown tool: {name}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
 
         if name == "qdrant-store-memory":
             if not arguments or "information" not in arguments:
-                raise ValueError("Missing required argument 'information'")
+                error_msg = "Missing required argument 'information'"
+                logger.error(error_msg)
+                raise ValueError(error_msg)
             information = arguments["information"]
+            logger.info(f"Storing memory: {information}")
             await qdrant.store_memory(information)
             return [types.TextContent(type="text", text=f"Remembered: {information}")]
 
         if name == "qdrant-find-memories":
             if not arguments or "query" not in arguments:
-                raise ValueError("Missing required argument 'query'")
+                error_msg = "Missing required argument 'query'"
+                logger.error(error_msg)
+                raise ValueError(error_msg)
             query = arguments["query"]
+            logger.info(f"Searching memories with query: {query}")
             memories = await qdrant.find_memories(query)
+            logger.debug(f"Found {len(memories)} memories")
             content = [
                 types.TextContent(
                     type="text", text=f"Memories for the query '{query}'"
@@ -134,7 +147,7 @@ def serve(
     envvar="FASTEMBED_MODEL_NAME",
     required=True,
     help="FastEmbed model name",
-    default="sentence-transformers/all-MiniLM-L6-v2",
+    default="fast-paraphrase-multilingual-mpnet-base-v2",
 )
 @click.option(
     "--qdrant-local-path",
@@ -149,6 +162,33 @@ def main(
     fastembed_model_name: str,
     qdrant_local_path: Optional[str],
 ):
+    # Configure logger
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(current_dir)))
+    log_dir = os.path.join(project_root, "logs")
+    log_path = os.path.join(log_dir, "server.log")
+    
+    # Debug information about paths
+    print(f"__file__: {__file__}")
+    print(f"os.path.abspath(__file__): {os.path.abspath(__file__)}")
+    print(f"Current directory: {current_dir}")
+    print(f"Project root: {project_root}")
+    print(f"Log directory: {log_dir}")
+    print(f"Log file path: {log_path}")
+    print(f"Current working directory: {os.getcwd()}")
+    
+    # Create logs directory if it doesn't exist
+    os.makedirs(log_dir, exist_ok=True)
+    
+    logger.add(
+        log_path,
+        rotation="10 MB",
+        retention="1 week",
+        level="DEBUG",
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}"
+    )
+    logger.info(f"Starting Qdrant server with collection: {collection_name}")
+    logger.info(f"Logs will be written to: {log_path}")
     # XOR of url and local path, since we accept only one of them
     if not (bool(qdrant_url) ^ bool(qdrant_local_path)):
         raise ValueError("Exactly one of qdrant-url or qdrant-local-path must be provided")
