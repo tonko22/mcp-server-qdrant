@@ -39,6 +39,22 @@ uv run mcp-server-qdrant \
   --fastembed-model-name "sentence-transformers/all-MiniLM-L6-v2"
 ```
 
+### Local Development Setup
+
+For local development, you can run the server using the following command:
+
+```shell
+uv run mcp-server-qdrant \
+  --qdrant-url "http://localhost:6333" \
+  --qdrant-api-key "your-api-key" \
+  --collection-name "your-collection-name" \
+  --fastembed-model-name "sentence-transformers/all-MiniLM-L6-v2"
+```
+
+Make sure to replace:
+- `your-api-key` with your Qdrant API key (if authentication is enabled)
+- `your-collection-name` with your desired collection name
+
 ### Installing via Smithery
 
 To install Qdrant MCP Server for Claude Desktop automatically via [Smithery](https://smithery.ai/protocol/mcp-server-qdrant):

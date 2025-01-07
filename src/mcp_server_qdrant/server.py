@@ -1,5 +1,6 @@
 from typing import Optional
 import os
+import sys
 
 from loguru import logger
 from mcp.server import Server, NotificationOptions
@@ -15,10 +16,10 @@ from .qdrant import QdrantConnector
 
 def serve(
     qdrant_url: Optional[str],
-    qdrant_api_key: Optional[str],
-    collection_name: str,
+    qdrant_api_key: str,
+    collection_name: Optional[str],
     fastembed_model_name: str,
-    qdrant_local_path: Optional[str] = None,
+    qdrant_local_path: Optional[str],
 ) -> Server:
     """
     Instantiate the server and configure tools to store and find memories in Qdrant.
@@ -28,11 +29,20 @@ def serve(
     :param fastembed_model_name: The name of the FastEmbed model to use.
     :param qdrant_local_path: The path to the storage directory for the Qdrant client, if local mode is used.
     """
-    server = Server("qdrant")
+    try:
+        logger.debug(f"Creating QdrantConnector with url={qdrant_url}, collection={collection_name}, model={fastembed_model_name}")
+        qdrant = QdrantConnector(
+            qdrant_url=qdrant_url,
+            qdrant_api_key=qdrant_api_key,
+            collection_name=collection_name or "telegram_messages",
+            fastembed_model_name=fastembed_model_name,
+            qdrant_local_path=qdrant_local_path,
+        )
+    except Exception as e:  
+        logger.error(f"Failed to create QdrantConnector: {str(e)}", exc_info=True)
+        raise
 
-    qdrant = QdrantConnector(
-        qdrant_url, qdrant_api_key, collection_name, fastembed_model_name, qdrant_local_path
-    )
+    server = Server("qdrant")
 
     @server.list_tools()
     async def handle_list_tools() -> list[types.Tool]:
@@ -42,7 +52,8 @@ def serve(
         implemented as a resource, as it requires a query to be passed and resources point
         to a very specific piece of data.
         """
-        return [
+        logger.debug("Handling list_tools request")
+        tools = [
             types.Tool(
                 name="qdrant-store-memory",
                 description=(
@@ -78,6 +89,8 @@ def serve(
                 },
             ),
         ]
+        logger.debug(f"Returning tools: {[tool.name for tool in tools]}")
+        return tools
 
     @server.call_tool()
     async def handle_tool_call(
@@ -90,35 +103,45 @@ def serve(
             logger.error(error_msg)
             raise ValueError(error_msg)
 
-        if name == "qdrant-store-memory":
-            if not arguments or "information" not in arguments:
-                error_msg = "Missing required argument 'information'"
-                logger.error(error_msg)
-                raise ValueError(error_msg)
-            information = arguments["information"]
-            logger.info(f"Storing memory: {information}")
-            await qdrant.store_memory(information)
-            return [types.TextContent(type="text", text=f"Remembered: {information}")]
+        try:
+            if name == "qdrant-store-memory":
+                if not arguments or "information" not in arguments:
+                    error_msg = "Missing required argument 'information'"
+                    logger.error(error_msg)
+                    raise ValueError(error_msg)
+                information = arguments["information"]
+                logger.info(f"Storing memory: {information}")
+                await qdrant.store_memory(information)
+                return [types.TextContent(type="text", text=f"Remembered: {information}")]
 
-        if name == "qdrant-find-memories":
-            if not arguments or "query" not in arguments:
-                error_msg = "Missing required argument 'query'"
-                logger.error(error_msg)
-                raise ValueError(error_msg)
-            query = arguments["query"]
-            logger.info(f"Searching memories with query: {query}")
-            memories = await qdrant.find_memories(query)
-            logger.debug(f"Found {len(memories)} memories")
-            content = [
-                types.TextContent(
-                    type="text", text=f"Memories for the query '{query}'"
-                ),
-            ]
-            for memory in memories:
-                content.append(
-                    types.TextContent(type="text", text=f"<memory>{memory}</memory>")
+            if name == "qdrant-find-memories":
+                if not arguments or "query" not in arguments:
+                    error_msg = "Missing required argument 'query'"
+                    logger.error(error_msg)
+                    raise ValueError(error_msg)
+                query = arguments["query"]
+                logger.info(f"Searching memories with query: {query}")
+                memories = await qdrant.find_memories(query)
+                logger.debug(f"Found {len(memories)} memories")
+                
+                # Добавляем детальное логирование
+                logger.debug("Found memories content:")
+                for i, memory in enumerate(memories):
+                    logger.debug(f"Memory {i + 1}: {memory}")
+                
+                content = [
+                    types.TextContent(type="text", text=f"Memories for the query '{query}'")
+                ]
+                content.extend(
+                    types.TextContent(type="text", text=memory) for memory in memories
                 )
-            return content
+                
+                # Логируем финальный ответ
+                logger.debug(f"Returning content: {content}")
+                return content
+        except Exception as e:
+            logger.error(f"Error handling tool call: {str(e)}", exc_info=True)
+            raise
 
     return server
 
@@ -164,55 +187,94 @@ def main(
 ):
     # Configure logger
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.dirname(os.path.dirname(os.path.dirname(current_dir)))
-    log_dir = os.path.join(project_root, "logs")
-    log_path = os.path.join(log_dir, "server.log")
-    
-    # Debug information about paths
-    print(f"__file__: {__file__}")
-    print(f"os.path.abspath(__file__): {os.path.abspath(__file__)}")
-    print(f"Current directory: {current_dir}")
-    print(f"Project root: {project_root}")
-    print(f"Log directory: {log_dir}")
-    print(f"Log file path: {log_path}")
-    print(f"Current working directory: {os.getcwd()}")
+    module_root = os.path.dirname(os.path.dirname(os.path.dirname(current_dir)))
+    log_dir = os.path.join(module_root, "logs")
+    log_path = os.path.join(log_dir, "qdrant-server.log")
     
     # Create logs directory if it doesn't exist
     os.makedirs(log_dir, exist_ok=True)
     
+    # Test file creation
+    try:
+        with open(log_path, 'a') as f:
+            f.write("=== Starting new session ===\n")
+        print(f"Successfully wrote to log file: {log_path}")
+    except Exception as e:
+        print(f"Failed to write to log file: {str(e)}")
+        raise
+    
+    # Configure loguru
+    logger.remove()  # Remove default handler
+    
+    # Add console handler
     logger.add(
+        sys.stderr,
+        format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+        level="DEBUG",
+        colorize=True
+    )
+    
+    # Add file handler
+    sink_id = logger.add(
         log_path,
+        format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}",
+        level="DEBUG",
         rotation="10 MB",
         retention="1 week",
-        level="DEBUG",
-        format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}"
+        backtrace=True,
+        diagnose=True,
+        enqueue=True,
     )
-    logger.info(f"Starting Qdrant server with collection: {collection_name}")
-    logger.info(f"Logs will be written to: {log_path}")
-    # XOR of url and local path, since we accept only one of them
-    if not (bool(qdrant_url) ^ bool(qdrant_local_path)):
-        raise ValueError("Exactly one of qdrant-url or qdrant-local-path must be provided")
+    
+    try:
+        logger.info("Starting Qdrant server")
+        logger.info(f"Logs will be written to: {log_path}")
+        
+        # XOR of url and local path, since we accept only one of them
+        if not (bool(qdrant_url) ^ bool(qdrant_local_path)):
+            raise ValueError("Exactly one of qdrant-url or qdrant-local-path must be provided")
 
-    async def _run():
-        async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
-            server = serve(
-                qdrant_url,
-                qdrant_api_key,
-                collection_name,
-                fastembed_model_name,
-                qdrant_local_path,
-            )
-            await server.run(
-                read_stream,
-                write_stream,
-                InitializationOptions(
-                    server_name="qdrant",
-                    server_version="0.5.1",
-                    capabilities=server.get_capabilities(
-                        notification_options=NotificationOptions(),
-                        experimental_capabilities={},
-                    ),
-                ),
-            )
+        async def _run():
+            logger.debug("Creating stdio server")
+            try:
+                async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
+                    logger.debug("Stdio server created successfully")
+                    
+                    logger.debug("Creating Qdrant server instance")
+                    server = serve(
+                        qdrant_url,
+                        qdrant_api_key,
+                        collection_name,
+                        fastembed_model_name,
+                        qdrant_local_path,
+                    )
+                    logger.debug("Qdrant server instance created")
+                    
+                    logger.debug("Starting server run loop")
+                    try:
+                        await server.run(
+                            read_stream,
+                            write_stream,
+                            InitializationOptions(
+                                server_name="qdrant",
+                                server_version="0.5.1",
+                                capabilities=server.get_capabilities(
+                                    notification_options=NotificationOptions(),
+                                    experimental_capabilities={},
+                                ),
+                            ),
+                        )
+                    except Exception as e:
+                        logger.error(f"Server run loop failed: {str(e)}", exc_info=True)
+                        raise
+            except Exception as e:
+                logger.error(f"Failed to create or run stdio server: {str(e)}", exc_info=True)
+                raise
 
-    asyncio.run(_run())
+        logger.debug("Starting asyncio run")
+        asyncio.run(_run())
+    finally:
+        try:
+            logger.remove(sink_id)
+        except ValueError:
+            pass  # Игнорируем ошибку, если хендлер уже удален

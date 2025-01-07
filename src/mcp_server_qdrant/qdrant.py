@@ -1,7 +1,7 @@
 from typing import Optional
 from loguru import logger
 from qdrant_client import AsyncQdrantClient, models
-
+import fastembed
 
 class QdrantConnector:
     """
@@ -22,17 +22,20 @@ class QdrantConnector:
         qdrant_local_path: Optional[str] = None,
     ):
         logger.debug(f"Initializing QdrantConnector with collection: {collection_name}, model: {fastembed_model_name}")
+        
         self._qdrant_url = qdrant_url.rstrip("/") if qdrant_url else None
         self._qdrant_api_key = qdrant_api_key
         self._collection_name = collection_name
         self._fastembed_model_name = fastembed_model_name
-        # For the time being, FastEmbed models are the only supported ones.
-        # A list of all available models can be found here:
-        # https://qdrant.github.io/fastembed/examples/Supported_Models/
-    
+
+        logger.debug(f"Creating AsyncQdrantClient with: url={self._qdrant_url}, path={qdrant_local_path}")
         self._client = AsyncQdrantClient(location=qdrant_url, api_key=qdrant_api_key, path=qdrant_local_path)
-        self._client.set_model(fastembed_model_name)
-        logger.info("QdrantConnector initialized with collection: {collection_name}, model: {fastembed_model_name}")
+        
+        logger.debug(f"Setting up FastEmbed model: {fastembed_model_name}")
+        self._model = fastembed.TextEmbedding(model_name=fastembed_model_name)
+        logger.debug("FastEmbed model setup successful")
+        
+        logger.info(f"QdrantConnector initialized with collection: {self._collection_name}, model: {self._fastembed_model_name}")
 
     async def store_memory(self, information: str):
         """
@@ -41,9 +44,20 @@ class QdrantConnector:
         """
         logger.debug(f"Storing memory: {information[:100]}...")
         try:
-            await self._client.add(
-                self._collection_name,
-                documents=[information],
+            # Получаем эмбеддинги для текста
+            embeddings = list(self._model.embed([information]))
+            logger.debug(f"Generated embeddings: shape={len(embeddings)}x{len(embeddings[0])}")
+            
+            # Сохраняем в Qdrant
+            await self._client.upsert(
+                collection_name=self._collection_name,
+                points=[
+                    models.PointStruct(
+                        id=hash(information),  # TODO: использовать более надежный способ генерации ID
+                        vector=embeddings[0].tolist(),
+                        payload={"text": information}
+                    )
+                ]
             )
             logger.info("Memory stored successfully")
         except Exception as e:
@@ -57,19 +71,30 @@ class QdrantConnector:
         :return: A list of memories found.
         """
         logger.debug(f"Searching memories with query: {query}")
+        
         try:
-            collection_exists = await self._client.collection_exists(self._collection_name)
-            if not collection_exists:
-                logger.info("Collection does not exist, returning empty list")
-                return []
-
-            search_results = await self._client.query(
-                self._collection_name,
-                query_text=query,
-                limit=10,
+            # Получаем эмбеддинги для запроса
+            query_embeddings = list(self._model.embed([query]))
+            logger.debug(f"Generated embeddings: shape={len(query_embeddings)}x{len(query_embeddings[0])}")
+            
+            # Ищем похожие документы
+            search_result = await self._client.search(
+                collection_name=self._collection_name,
+                query_vector=query_embeddings[0].tolist(),
+                limit=10
             )
-            logger.info(f"Found {len(search_results)} memories")
-            return [result.document for result in search_results]
+            logger.debug(f"Raw search result: {search_result}")
+            
+            # Извлекаем тексты из результатов
+            memories = []
+            for hit in search_result:
+                logger.debug(f"Hit score: {hit.score}, payload: {hit.payload}")
+                if hit.payload and "text" in hit.payload:
+                    memories.append(hit.payload["text"])
+            
+            logger.info(f"Found {len(memories)} memories")
+            return memories
+            
         except Exception as e:
             logger.error(f"Error searching memories: {str(e)}")
-            raise
+            return []
