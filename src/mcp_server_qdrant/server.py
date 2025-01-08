@@ -1,44 +1,40 @@
-from typing import Optional
-import os
-import sys
+"""
+Server implementation for the Qdrant memory store.
+"""
 
-from loguru import logger
-from mcp.server import Server, NotificationOptions
-from mcp.server.models import InitializationOptions
+from typing import Optional, Dict, Any
 
 import click
-import mcp.types as types
+from loguru import logger
+from mcp.server import Server, types, NotificationOptions
+from mcp.server.models import InitializationOptions
 import asyncio
 import mcp
 
 from .qdrant import QdrantConnector
 
 
-def serve(
-    qdrant_url: Optional[str],
-    qdrant_api_key: str,
-    collection_name: Optional[str],
+async def serve(
+    qdrant_url: str,
+    collection_name: str,
     fastembed_model_name: str,
-    qdrant_local_path: Optional[str],
+    qdrant_api_key: Optional[str] = None,
+    qdrant_local_path: Optional[str] = None,
 ) -> Server:
     """
     Instantiate the server and configure tools to store and find memories in Qdrant.
-    :param qdrant_url: The URL of the Qdrant server.
-    :param qdrant_api_key: The API key to use for the Qdrant server.
-    :param collection_name: The name of the collection to use.
-    :param fastembed_model_name: The name of the FastEmbed model to use.
-    :param qdrant_local_path: The path to the storage directory for the Qdrant client, if local mode is used.
     """
+    logger.debug(f"Creating QdrantConnector with url={qdrant_url}, collection={collection_name}, model={fastembed_model_name}")
     try:
-        logger.debug(f"Creating QdrantConnector with url={qdrant_url}, collection={collection_name}, model={fastembed_model_name}")
         qdrant = QdrantConnector(
             qdrant_url=qdrant_url,
-            qdrant_api_key=qdrant_api_key,
-            collection_name=collection_name or "telegram_messages",
+            collection_name=collection_name,
             fastembed_model_name=fastembed_model_name,
+            qdrant_api_key=qdrant_api_key,
             qdrant_local_path=qdrant_local_path,
         )
-    except Exception as e:  
+        logger.debug("QdrantConnector created successfully")
+    except Exception as e:
         logger.error(f"Failed to create QdrantConnector: {str(e)}", exc_info=True)
         raise
 
@@ -46,12 +42,7 @@ def serve(
 
     @server.list_tools()
     async def handle_list_tools() -> list[types.Tool]:
-        """
-        Return the list of tools that the server provides. By default, there are two
-        tools: one to store memories and another to find them. Finding the memories is not
-        implemented as a resource, as it requires a query to be passed and resources point
-        to a very specific piece of data.
-        """
+        """Return the list of tools that the server provides."""
         logger.debug("Handling list_tools request")
         tools = [
             types.Tool(
@@ -94,21 +85,17 @@ def serve(
 
     @server.call_tool()
     async def handle_tool_call(
-        name: str, arguments: dict | None
+        name: str, arguments: Optional[Dict[str, Any]]
     ) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
         logger.debug(f"Tool call received: {name} with arguments: {arguments}")
         
         if name not in ["qdrant-store-memory", "qdrant-find-memories"]:
-            error_msg = f"Unknown tool: {name}"
-            logger.error(error_msg)
-            raise ValueError(error_msg)
+            raise ValueError(f"Unknown tool: {name}")
 
         try:
             if name == "qdrant-store-memory":
                 if not arguments or "information" not in arguments:
-                    error_msg = "Missing required argument 'information'"
-                    logger.error(error_msg)
-                    raise ValueError(error_msg)
+                    raise ValueError("Missing required argument 'information'")
                 information = arguments["information"]
                 logger.info(f"Storing memory: {information}")
                 await qdrant.store_memory(information)
@@ -116,9 +103,7 @@ def serve(
 
             if name == "qdrant-find-memories":
                 if not arguments or "query" not in arguments:
-                    error_msg = "Missing required argument 'query'"
-                    logger.error(error_msg)
-                    raise ValueError(error_msg)
+                    raise ValueError("Missing required argument 'query'")
                 query = arguments["query"]
                 logger.info(f"Searching memories with query: {query}")
                 memories = await qdrant.find_memories(query)
@@ -133,7 +118,7 @@ def serve(
                     types.TextContent(type="text", text=f"Memories for the query '{query}'")
                 ]
                 content.extend(
-                    types.TextContent(type="text", text=memory) for memory in memories
+                    types.TextContent(type="text", text=memory["text"]) for memory in memories
                 )
                 
                 # Логируем финальный ответ
@@ -150,131 +135,73 @@ def serve(
 @click.option(
     "--qdrant-url",
     envvar="QDRANT_URL",
-    required=False,
-    help="Qdrant URL",
+    required=True,
+    help="URL of the Qdrant server",
 )
 @click.option(
     "--qdrant-api-key",
     envvar="QDRANT_API_KEY",
-    required=False,
-    help="Qdrant API key",
+    help="API key for the Qdrant server",
 )
 @click.option(
     "--collection-name",
     envvar="COLLECTION_NAME",
-    required=True,
-    help="Collection name",
+    default="telegram_messages",
+    help="Name of the collection to use",
 )
 @click.option(
     "--fastembed-model-name",
     envvar="FASTEMBED_MODEL_NAME",
-    required=True,
-    help="FastEmbed model name",
-    default="fast-paraphrase-multilingual-mpnet-base-v2",
+    default="sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
+    help="Name of the FastEmbed model to use",
 )
 @click.option(
     "--qdrant-local-path",
     envvar="QDRANT_LOCAL_PATH",
-    required=False,
-    help="Qdrant local path",
+    help="Path to the storage directory for the Qdrant client, if local mode is used",
 )
 def main(
-    qdrant_url: Optional[str],
-    qdrant_api_key: str,
-    collection_name: Optional[str],
+    qdrant_url: str,
+    qdrant_api_key: Optional[str],
+    collection_name: str,
     fastembed_model_name: str,
     qdrant_local_path: Optional[str],
-):
-    # Configure logger
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    module_root = os.path.dirname(os.path.dirname(os.path.dirname(current_dir)))
-    log_dir = os.path.join(module_root, "logs")
-    log_path = os.path.join(log_dir, "qdrant-server.log")
-    
-    # Create logs directory if it doesn't exist
-    os.makedirs(log_dir, exist_ok=True)
-    
-    # Test file creation
-    try:
-        with open(log_path, 'a') as f:
-            f.write("=== Starting new session ===\n")
-        print(f"Successfully wrote to log file: {log_path}")
-    except Exception as e:
-        print(f"Failed to write to log file: {str(e)}")
-        raise
-    
-    # Configure loguru
-    logger.remove()  # Remove default handler
-    
-    # Add console handler
-    logger.add(
-        sys.stderr,
-        format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
-        level="DEBUG",
-        colorize=True
-    )
-    
-    # Add file handler
-    sink_id = logger.add(
-        log_path,
-        format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}",
-        level="DEBUG",
-        rotation="10 MB",
-        retention="1 week",
-        backtrace=True,
-        diagnose=True,
-        enqueue=True,
-    )
-    
-    try:
-        logger.info("Starting Qdrant server")
-        logger.info(f"Logs will be written to: {log_path}")
-        
-        # XOR of url and local path, since we accept only one of them
-        if not (bool(qdrant_url) ^ bool(qdrant_local_path)):
-            raise ValueError("Exactly one of qdrant-url or qdrant-local-path must be provided")
+) -> None:
+    """Run the server."""
 
-        async def _run():
-            logger.debug("Creating stdio server")
+    async def _run() -> None:
+        logger.debug("Starting server")
+        async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
+            logger.debug("Creating Qdrant server instance")
             try:
-                async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
-                    logger.debug("Stdio server created successfully")
-                    
-                    logger.debug("Creating Qdrant server instance")
-                    server = serve(
-                        qdrant_url,
-                        qdrant_api_key,
-                        collection_name,
-                        fastembed_model_name,
-                        qdrant_local_path,
-                    )
-                    logger.debug("Qdrant server instance created")
-                    
-                    logger.debug("Starting server run loop")
-                    try:
-                        await server.run(
-                            read_stream,
-                            write_stream,
-                            InitializationOptions(
-                                server_name="qdrant",
-                                server_version="0.5.1",
-                                capabilities=server.get_capabilities(
-                                    notification_options=NotificationOptions(),
-                                    experimental_capabilities={},
-                                ),
-                            ),
-                        )
-                    except Exception as e:
-                        logger.error(f"Server run loop failed: {str(e)}", exc_info=True)
-                        raise
+                server = await serve(
+                    qdrant_url=qdrant_url,
+                    collection_name=collection_name,
+                    fastembed_model_name=fastembed_model_name,
+                    qdrant_api_key=qdrant_api_key,
+                    qdrant_local_path=qdrant_local_path,
+                )
+                logger.debug("Qdrant server instance created")
             except Exception as e:
-                logger.error(f"Failed to create or run stdio server: {str(e)}", exc_info=True)
+                logger.error(f"Failed to create Qdrant server instance: {str(e)}", exc_info=True)
                 raise
 
-        logger.debug("Starting asyncio run")
+            logger.debug("Starting server run loop")
+            await server.run(
+                read_stream,
+                write_stream,
+                InitializationOptions(
+                    server_name="qdrant",
+                    server_version="0.5.1",
+                    capabilities=server.get_capabilities(
+                        notification_options=NotificationOptions(),
+                        experimental_capabilities={},
+                    ),
+                ),
+            )
+
+    try:
         asyncio.run(_run())
-    finally:
-        try:
-            logger.remove(sink_id)
-        except ValueError:
-            pass  # Игнорируем ошибку, если хендлер уже удален
+    except Exception as e:
+        logger.error(f"Failed to create or run stdio server: {str(e)}", exc_info=True)
+        raise
