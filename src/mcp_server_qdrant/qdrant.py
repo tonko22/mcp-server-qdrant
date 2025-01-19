@@ -67,13 +67,13 @@ class QdrantConnector(QdrantClient, QdrantFastembedMixin):
                 logger.debug(f"Query completed successfully, result type: {type(search_result)}")
             except AttributeError as ae:
                 logger.error(f"Attribute error during query: {str(ae)}", exc_info=True)
-                raise
+                raise ValueError(f"Model initialization error: {str(ae)}")
             except ValueError as ve:
                 logger.error(f"Value error during query: {str(ve)}", exc_info=True)
                 raise
             except Exception as query_error:
                 logger.error(f"Error during query execution: {str(query_error)}, type: {type(query_error)}", exc_info=True)
-                raise
+                raise ValueError(f"Query execution error: {str(query_error)}")
 
             logger.debug(f"Search completed, found {len(search_result)} results")
             logger.debug(f"First result example: {search_result[0] if search_result else 'No results'}")
@@ -84,7 +84,7 @@ class QdrantConnector(QdrantClient, QdrantFastembedMixin):
 
         except Exception as e:
             logger.error(f"Error searching memories: {str(e)}, type: {type(e)}", exc_info=True)
-            raise
+            raise ValueError(f"Memory search error: {str(e)}")
 
     async def add_message(self, message_text: str, user_id: int, username: str, message_id: int, date: datetime):
         """Add a message to the vector database."""

@@ -90,11 +90,13 @@ async def serve(
         logger.debug(f"Tool call received: {name} with arguments: {arguments}")
         
         if name not in ["qdrant-store-memory", "qdrant-find-memories"]:
+            logger.error(f"Unknown tool: {name}")
             raise ValueError(f"Unknown tool: {name}")
 
         try:
             if name == "qdrant-store-memory":
                 if not arguments or "information" not in arguments:
+                    logger.error("Missing required argument 'information'")
                     raise ValueError("Missing required argument 'information'")
                 information = arguments["information"]
                 logger.info(f"Storing memory: {information}")
@@ -103,30 +105,35 @@ async def serve(
 
             if name == "qdrant-find-memories":
                 if not arguments or "query" not in arguments:
+                    logger.error("Missing required argument 'query'")
                     raise ValueError("Missing required argument 'query'")
                 query = arguments["query"]
                 logger.info(f"Searching memories with query: {query}")
-                memories = await qdrant.find_memories(query)
-                logger.debug(f"Found {len(memories)} memories")
-                
-                # Добавляем детальное логирование
-                logger.debug("Found memories content:")
-                for i, memory in enumerate(memories):
-                    logger.debug(f"Memory {i + 1}: {memory}")
-                
-                content = [
-                    types.TextContent(type="text", text=f"Memories for the query '{query}'")
-                ]
-                content.extend(
-                    types.TextContent(type="text", text=memory["text"]) for memory in memories
-                )
-                
-                # Логируем финальный ответ
-                logger.debug(f"Returning content: {content}")
-                return content
+                try:
+                    memories = await qdrant.find_memories(query)
+                    logger.debug(f"Found {len(memories)} memories")
+                    
+                    # Добавляем детальное логирование
+                    logger.debug("Found memories content:")
+                    for i, memory in enumerate(memories):
+                        logger.debug(f"Memory {i + 1}: {memory}")
+                    
+                    content = [
+                        types.TextContent(type="text", text=f"Memories for the query '{query}'")
+                    ]
+                    content.extend(
+                        types.TextContent(type="text", text=memory["text"]) for memory in memories
+                    )
+                    
+                    # Логируем финальный ответ
+                    logger.debug(f"Returning content: {content}")
+                    return content
+                except Exception as search_error:
+                    logger.error(f"Error during search: {str(search_error)}", exc_info=True)
+                    raise
         except Exception as e:
             logger.error(f"Error handling tool call: {str(e)}", exc_info=True)
-            raise
+            raise ValueError(str(e))
 
     return server
 
