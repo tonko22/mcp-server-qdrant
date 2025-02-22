@@ -8,10 +8,10 @@ from datetime import datetime
 
 from loguru import logger
 from qdrant_client import QdrantClient, models
-from qdrant_client.qdrant_fastembed import QdrantFastembedMixin
+from fastembed import TextEmbedding
 
 
-class QdrantConnector(QdrantClient, QdrantFastembedMixin):
+class QdrantConnector:
     """
     A connector for the Qdrant vector database.
     """
@@ -26,74 +26,77 @@ class QdrantConnector(QdrantClient, QdrantFastembedMixin):
     ):
         """Initialize instance variables and create connections."""
         self._collection_name = collection_name
+        self.embedding_model = TextEmbedding(fastembed_model_name)
+        # Get vector size from model
+        self.vector_size = len(next(self.embedding_model.embed(["test"])))
         
-        # Инициализируем родительский класс QdrantClient
-        QdrantClient.__init__(self, url=qdrant_url, api_key=qdrant_api_key)
-        # Инициализируем FastEmbed
-        QdrantFastembedMixin.__init__(self)
+        # Инициализируем Qdrant клиент
+        self.client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
         
         logger.info(f"Initializing QdrantConnector with model: {fastembed_model_name}")
-        try:
-            logger.debug("Setting FastEmbed model")
-            self.set_model(fastembed_model_name)
-            logger.info("FastEmbed model initialized successfully")
-        except Exception as e:
-            logger.error(f"Failed to initialize FastEmbed model: {str(e)}", exc_info=True)
-            raise
+        
+        # Создаем коллекцию если её нет
+        self._ensure_collection_exists()
+        
+    def _ensure_collection_exists(self):
+        """Create collection if it doesn't exist."""
+        if not self.client.collection_exists(self._collection_name):
+            logger.info(f"Creating collection {self._collection_name}")
+            
+            self.client.create_collection(
+                collection_name=self._collection_name,
+                vectors_config=models.VectorParams(
+                    size=self.vector_size,
+                    distance=models.Distance.COSINE,
+                )
+            )
+            logger.info(f"Collection {self._collection_name} created successfully")
 
-        # Получаем имя поля вектора
-        self._vector_field_name = self.get_vector_field_name()
-        logger.debug(f"Using vector field name: {self._vector_field_name}")
+    def get_embedding(self, text: str) -> list:
+        """Get embedding for text using FastEmbed."""
+        embeddings = list(self.embedding_model.embed([text]))
+        return embeddings[0].tolist()
 
-    async def find_memories(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+    def find_memories(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """Search for memories by semantic similarity."""
         logger.debug(f"Searching memories with query: {query}")
         try:
-            # Выполняем поиск через query, который сам сгенерирует эмбеддинги
-            logger.debug(f"Calling query with collection_name={self._collection_name}, query_text={query}, limit={limit}")
-            try:
-                # Проверяем, что модель инициализирована
-                model = self._get_or_init_model(model_name=self.embedding_model_name)
-                logger.debug(f"Using model: {model}")
+            # Получаем эмбеддинги для запроса
+            query_vector = self.get_embedding(query)
 
-                # Проверяем, что коллекция существует
-                if not self.collection_exists(self._collection_name):
-                    raise ValueError(f"Collection {self._collection_name} does not exist")
+            # Выполняем поиск
+            search_result = self.client.search(
+                collection_name=self._collection_name,
+                query_vector=query_vector,
+                limit=limit,
+                with_payload=True,
+                with_vectors=False,
+                score_threshold=0.0
+            )
 
-                search_result = self.query(
-                    collection_name=self._collection_name,
-                    query_text=query,
-                    limit=limit
-                )
-                logger.debug(f"Query completed successfully, result type: {type(search_result)}")
-            except AttributeError as ae:
-                logger.error(f"Attribute error during query: {str(ae)}", exc_info=True)
-                raise ValueError(f"Model initialization error: {str(ae)}")
-            except ValueError as ve:
-                logger.error(f"Value error during query: {str(ve)}", exc_info=True)
-                raise
-            except Exception as query_error:
-                logger.error(f"Error during query execution: {str(query_error)}, type: {type(query_error)}", exc_info=True)
-                raise ValueError(f"Query execution error: {str(query_error)}")
-
-            logger.debug(f"Search completed, found {len(search_result)} results")
-            logger.debug(f"First result example: {search_result[0] if search_result else 'No results'}")
-
-            # Получаем текст из metadata
-            result = [{"score": item.score, "text": item.metadata["text"]} for item in search_result]
+            # Преобразуем результаты в нужный формат
+            result = []
+            for item in search_result:
+                result_item = {
+                    "id": item.id,
+                    "score": item.score,
+                    "metadata": item.payload
+                }
+                result.append(result_item)
             return result
 
         except Exception as e:
-            logger.error(f"Error searching memories: {str(e)}, type: {type(e)}", exc_info=True)
+            logger.error(f"Error searching memories: {str(e)}", exc_info=True)
             raise ValueError(f"Memory search error: {str(e)}")
 
-    async def add_message(self, message_text: str, user_id: int, username: str, message_id: int, date: datetime):
+    def add_message(self, message_text: str, user_id: int, username: str, message_id: int, date: datetime):
         """Add a message to the vector database."""
         logger.debug(f"Adding message from {username}: {message_text[:50]}...")
-        embeddings = list(self.embed([message_text]))
+        vector = self.get_embedding(message_text)
         
         point = models.PointStruct(
             id=uuid4().hex,
-            vector={self._vector_field_name: embeddings[0].tolist()},
+            vector=vector,
             payload={
                 "text": message_text,
                 "user_id": user_id,
@@ -102,18 +105,17 @@ class QdrantConnector(QdrantClient, QdrantFastembedMixin):
                 "date": date.isoformat()
             }
         )
-
-        await self.upsert(
+        
+        self.client.upsert(
             collection_name=self._collection_name,
             points=[point]
         )
 
-    async def store_memory(self, information: str, metadata: Dict[str, Any] = None) -> None:
+    def store_memory(self, information: str, metadata: Optional[Dict[str, Any]] = None):
         """Store a memory in the vector database."""
         logger.debug(f"Storing memory: {information[:100]}...")
         try:
-            embeddings = list(self.embed([information]))
-            logger.debug(f"Generated embeddings: shape={len(embeddings)}x{len(embeddings[0])}")
+            vector = self.get_embedding(information)
             
             payload = {"text": information}
             if metadata:
@@ -121,15 +123,16 @@ class QdrantConnector(QdrantClient, QdrantFastembedMixin):
 
             point = models.PointStruct(
                 id=uuid4().hex,
-                vector={self._vector_field_name: embeddings[0].tolist()},
+                vector=vector,
                 payload=payload
             )
 
-            await self.upsert(
+            self.client.upsert(
                 collection_name=self._collection_name,
                 points=[point]
             )
-
+            
+            return {"status": "success", "message": "Memory stored successfully"}
         except Exception as e:
             logger.error(f"Error storing memory: {str(e)}", exc_info=True)
-            raise
+            raise ValueError(f"Memory storage error: {str(e)}")

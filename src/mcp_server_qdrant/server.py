@@ -100,7 +100,7 @@ async def serve(
                     raise ValueError("Missing required argument 'information'")
                 information = arguments["information"]
                 logger.info(f"Storing memory: {information}")
-                await qdrant.store_memory(information)
+                qdrant.store_memory(information)
                 return [types.TextContent(type="text", text=f"Remembered: {information}")]
 
             if name == "qdrant-find-memories":
@@ -110,7 +110,7 @@ async def serve(
                 query = arguments["query"]
                 logger.info(f"Searching memories with query: {query}")
                 try:
-                    memories = await qdrant.find_memories(query)
+                    memories = qdrant.find_memories(query)
                     logger.debug(f"Found {len(memories)} memories")
                     
                     # Добавляем детальное логирование
@@ -122,7 +122,7 @@ async def serve(
                         types.TextContent(type="text", text=f"Memories for the query '{query}'")
                     ]
                     content.extend(
-                        types.TextContent(type="text", text=memory["text"]) for memory in memories
+                        types.TextContent(type="text", text=memory['metadata']['text']) for memory in memories
                     )
                     
                     # Логируем финальный ответ
